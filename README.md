@@ -12,8 +12,12 @@ cd chimera-demo-pipeline
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# System dep — needed for extracting .rar archives from HLTV
-sudo apt install unrar-free   # Linux
+# System dep — needed for extracting .rar archives from HLTV.
+# `unar` is recommended: GPL, full RAR5 support, in standard repos.
+# (Don't use `unrar-free` — incomplete RAR5 support, may silently fail.)
+sudo apt install unar         # Linux (preferred)
+# or:
+sudo apt install p7zip-full   # Linux (alternative; auto-detected as fallback)
 brew install unar             # macOS
 
 # HF auth (needs write access to the target dataset repo)
@@ -65,7 +69,7 @@ Same `chimera-demo run` works on any worker with HF auth. To run on RunPod:
 
 ```bash
 # pod startup
-apt update && apt install -y unrar-free git python3-venv
+apt update && apt install -y unar git python3-venv
 git clone <this repo> && cd chimera-demo-pipeline
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .

@@ -82,21 +82,38 @@ def download_rar(demo_url: str, dest: Path,
     raise RuntimeError(f"download_rar failed: {demo_url} ({last_err})")
 
 
-def _ensure_unrar() -> str:
-    """Locate unrar binary. Returns path. Raises if not installed."""
-    path = shutil.which("unrar") or shutil.which("unar")
-    if not path:
-        raise RuntimeError(
-            "unrar binary not found. Install with: apt install unrar (Linux) "
-            "or brew install rar (macOS)."
-        )
-    return path
+# RAR extractor backends, in preference order:
+#   unar    — GPL'd The Unarchiver; full RAR3 + RAR5; cleanest default
+#   7z      — p7zip-full; handles RAR5 via the rar codec; often preinstalled
+#   unrar   — RARLAB official (Debian non-free); fastest but proprietary
+# We do NOT prefer `unrar-free` — it has incomplete RAR5 support and silently
+# truncates many modern WinRAR archives, including some HLTV demo .rars.
+RAR_TOOLS_PREFERENCE = [
+    ("unar", "unar"),
+    ("7z", "7zip"),
+    ("unrar", "unrar"),
+]
+
+
+def _detect_rar_tool() -> str:
+    """Return the rarfile UNRAR_TOOL name for the first available extractor."""
+    for binary, _ in RAR_TOOLS_PREFERENCE:
+        if shutil.which(binary):
+            return binary
+    raise RuntimeError(
+        "No RAR extractor found. Install one (in order of preference):\n"
+        "  apt install unar          # Linux, recommended (GPL, full RAR5)\n"
+        "  apt install p7zip-full    # Linux, alternative (also handles RAR5)\n"
+        "  apt install unrar         # Linux non-free (RARLAB, fastest)\n"
+        "  brew install unar         # macOS\n"
+        "Skip `unrar-free` — incomplete RAR5 support."
+    )
 
 
 def extract_dems(rar_path: Path, dest_dir: Path) -> list[Path]:
     """Extract all .dem from rar_path into dest_dir. Returns list of .dem paths."""
-    _ensure_unrar()  # raises if missing
-    rarfile.UNRAR_TOOL = "unrar"
+    tool = _detect_rar_tool()
+    rarfile.UNRAR_TOOL = tool
     dest_dir.mkdir(parents=True, exist_ok=True)
     with rarfile.RarFile(str(rar_path)) as rf:
         members = [m for m in rf.namelist() if m.lower().endswith(".dem")]
