@@ -103,6 +103,24 @@ def run(
     start_offset: int = typer.Option(0),
     dry_run: bool = typer.Option(False, "--dry-run",
                                    help="scrape + download + extract + name; SKIP upload"),
+    team: list[str] = typer.Option(
+        None, "--team",
+        help="case-insensitive substring filter on team names (repeatable; "
+             "matches if EITHER team name contains ANY of the provided substrings). "
+             "Example: --team vitality --team spirit"),
+    top_teams: bool = typer.Option(
+        False, "--top-teams",
+        help="shortcut for the current HLTV top ~10 teams (vitality, spirit, "
+             "falcons, mouz, natus vincere, faze, g2, mongolz, astralis, liquid, "
+             "aurora, paris legion). Overrides --team if both passed."),
+    event: list[str] = typer.Option(
+        None, "--event",
+        help="case-insensitive substring filter on event name (repeatable; "
+             "matches if event contains ANY)"),
+    scan_limit: int = typer.Option(
+        5000, "--scan-limit",
+        help="max HLTV listings to walk before giving up on filters. Bumps if "
+             "your --team filter is narrow and most listings don't match."),
 ):
     """Full pipeline: HLTV → demo .rar → .dem → HF dataset (with manifest update).
 
@@ -122,13 +140,46 @@ def run(
     skipped = 0
     failed: list[tuple[int, str]] = []
 
-    rprint(f"[bold]Scraping HLTV results (stars={stars}, offset={start_offset})...[/bold]")
-    for summary in scraper.iter_matches(stars=stars, max_matches=10_000,
+    # --top-teams overrides --team with the current HLTV top tier
+    TOP_TEAMS = [
+        "vitality", "spirit", "falcons", "mouz", "natus vincere", "faze",
+        "g2", "mongolz", "astralis", "liquid", "aurora", "paris legion",
+        "furia", "navi",
+    ]
+    if top_teams:
+        team = TOP_TEAMS
+    team_filters = [t.lower() for t in (team or [])]
+    event_filters = [e.lower() for e in (event or [])]
+    if team_filters:
+        rprint(f"[bold]Team filter (any):[/bold] {team_filters}")
+    if event_filters:
+        rprint(f"[bold]Event filter (any):[/bold] {event_filters}")
+
+    def matches_filters(s) -> bool:
+        if team_filters:
+            t1 = s.team1.lower(); t2 = s.team2.lower()
+            if not any(t in t1 or t in t2 for t in team_filters):
+                return False
+        if event_filters:
+            ev = s.event.lower()
+            if not any(e in ev for e in event_filters):
+                return False
+        return True
+
+    rprint(f"[bold]Scraping HLTV results (stars={stars}, offset={start_offset}, "
+           f"scan_limit={scan_limit})...[/bold]")
+    scanned = 0
+    filtered_out = 0
+    for summary in scraper.iter_matches(stars=stars, max_matches=scan_limit,
                                           start_offset=start_offset):
+        scanned += 1
         if processed_this_run >= max_matches:
             break
         if mf.has(summary.match_id):
             skipped += 1
+            continue
+        if not matches_filters(summary):
+            filtered_out += 1
             continue
         rprint(f"\n[cyan]→ match {summary.match_id}: {summary.team1} vs {summary.team2} "
                f"({summary.event}, {summary.score}, {summary.stars}★)[/cyan]")
@@ -191,7 +242,8 @@ def run(
             failed.append((summary.match_id, f"{type(e).__name__}: {e}"))
 
     rprint(f"\n[bold green]Done.[/bold green] "
-           f"processed={processed_this_run} skipped={skipped} failed={len(failed)}")
+           f"processed={processed_this_run} skipped={skipped} "
+           f"filtered_out={filtered_out} scanned={scanned} failed={len(failed)}")
     if failed:
         rprint("[red]Failures:[/red]")
         for mid, why in failed:
