@@ -7,7 +7,6 @@ dependencies = [
     "curl_cffi>=0.7",             # browser-fingerprint TLS, bypasses HLTV's Cloudflare WAF
     "beautifulsoup4>=4.12",
     "lxml>=5.1",
-    "rarfile>=4.2",               # extract .rar (needs `unrar` system binary)
     "huggingface_hub>=0.24",
     "hf_transfer>=0.1.9",         # parallel HF upload
     "typer>=0.12",                # CLI

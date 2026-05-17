@@ -16,7 +16,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import rarfile
 from curl_cffi import requests as cffi_requests
 
 from .hltv import DEFAULT_HEADERS, DEFAULT_IMPERSONATE
@@ -82,45 +81,82 @@ def download_rar(demo_url: str, dest: Path,
     raise RuntimeError(f"download_rar failed: {demo_url} ({last_err})")
 
 
-# RAR extractor backends, in preference order:
-#   unar    — GPL'd The Unarchiver; full RAR3 + RAR5; cleanest default
-#   7z      — p7zip-full; handles RAR5 via the rar codec; often preinstalled
-#   unrar   — RARLAB official (Debian non-free); fastest but proprietary
-# We do NOT prefer `unrar-free` — it has incomplete RAR5 support and silently
-# truncates many modern WinRAR archives, including some HLTV demo .rars.
-RAR_TOOLS_PREFERENCE = [
-    ("unar", "unar"),
-    ("7z", "7zip"),
-    ("unrar", "unrar"),
-]
+# Direct shell-out to a RAR extractor — we used to use the `rarfile` Python
+# lib, but its RAR5 metadata parser fails on many HLTV archives with
+# "BadRarFile: Failed the read enough data: req=65536 got=176". Shelling
+# out to a real extractor (which has a complete RAR5 implementation) avoids
+# this entirely. Preference order:
+#   7z      — p7zip-full; clean RAR5 support; usually pre-installed
+#   unar    — The Unarchiver; GPL; full RAR3 + RAR5; lsar to list
+#   unrar   — RARLAB official (Debian non-free); fastest
+# We do NOT prefer `unrar-free` — incomplete RAR5 support; will silently
+# fail on most HLTV demos.
+RAR_TOOLS_PREFERENCE = ["7z", "unar", "unrar"]
 
 
 def _detect_rar_tool() -> str:
-    """Return the rarfile UNRAR_TOOL name for the first available extractor."""
-    for binary, _ in RAR_TOOLS_PREFERENCE:
-        if shutil.which(binary):
-            return binary
+    """Return the path of the first available RAR extractor binary."""
+    for binary in RAR_TOOLS_PREFERENCE:
+        path = shutil.which(binary)
+        if path:
+            # Exclude unrar-free, which presents as `unrar` but has broken RAR5.
+            if binary == "unrar":
+                try:
+                    out = subprocess.run([path, "--help"], capture_output=True,
+                                         text=True, timeout=5).stdout.lower() \
+                          + subprocess.run([path, "--help"], capture_output=True,
+                                           text=True, timeout=5).stderr.lower()
+                    if "unrar-free" in out:
+                        continue   # broken RAR5; skip
+                except Exception:
+                    pass
+            return path
     raise RuntimeError(
-        "No RAR extractor found. Install one (in order of preference):\n"
-        "  apt install unar          # Linux, recommended (GPL, full RAR5)\n"
-        "  apt install p7zip-full    # Linux, alternative (also handles RAR5)\n"
-        "  apt install unrar         # Linux non-free (RARLAB, fastest)\n"
-        "  brew install unar         # macOS\n"
-        "Skip `unrar-free` — incomplete RAR5 support."
+        "No working RAR extractor found. Install one:\n"
+        "  apt install p7zip-full    # Linux, recommended (clean RAR5)\n"
+        "  apt install unar          # Linux/macOS (GPL, full RAR5)\n"
+        "  apt install unrar         # Linux non-free (RARLAB)\n"
+        "AVOID `unrar-free` — it has incomplete RAR5 support."
     )
 
 
 def extract_dems(rar_path: Path, dest_dir: Path) -> list[Path]:
-    """Extract all .dem from rar_path into dest_dir. Returns list of .dem paths."""
+    """Extract all .dem from rar_path into dest_dir. Returns list of .dem paths.
+
+    Shells out to 7z / unar / unrar (whichever is found first). Each tool
+    has slightly different invocation; we normalize via per-tool branches.
+    """
     tool = _detect_rar_tool()
-    rarfile.UNRAR_TOOL = tool
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with rarfile.RarFile(str(rar_path)) as rf:
-        members = [m for m in rf.namelist() if m.lower().endswith(".dem")]
-        if not members:
-            raise RuntimeError(f"no .dem files in {rar_path}")
-        rf.extractall(path=str(dest_dir), members=members)
-    return sorted(dest_dir.glob("*.dem"))
+    binary = Path(tool).name
+    if binary == "7z":
+        # 7z x archive.rar -odest_dir   (extract with full paths) → flatten after
+        cmd = [tool, "x", "-y", str(rar_path), f"-o{dest_dir}", "*.dem", "-r"]
+    elif binary == "unar":
+        # unar -o dest_dir archive.rar
+        cmd = [tool, "-o", str(dest_dir), "-f", str(rar_path)]
+    else:  # unrar
+        # unrar x -y archive.rar dest_dir/
+        cmd = [tool, "x", "-y", str(rar_path), str(dest_dir) + "/"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"{binary} extract failed (rc={proc.returncode}):\n"
+            f"  stdout: {proc.stdout[-500:]}\n  stderr: {proc.stderr[-500:]}"
+        )
+    # Some tools preserve directories — flatten .dem to dest_dir root
+    dems = list(dest_dir.rglob("*.dem"))
+    if not dems:
+        raise RuntimeError(f"no .dem files extracted from {rar_path}")
+    flat: list[Path] = []
+    for d in dems:
+        if d.parent != dest_dir:
+            target = dest_dir / d.name
+            d.rename(target)
+            flat.append(target)
+        else:
+            flat.append(d)
+    return sorted(flat)
 
 
 def normalize_demo_name(orig_path: Path, team1: str, team2: str,
@@ -131,16 +167,33 @@ def normalize_demo_name(orig_path: Path, team1: str, team2: str,
         furia-vs-vitality-m1-mirage.dem
         spirit-vs-natus-vincere-m2-dust2.dem
 
-    HLTV often packs demos as `<id>-de_mirage.dem` etc. We extract the map
-    name and rebuild around it. If a map name is not recognizable, we keep
-    the original stem with `_unknown` suffix.
+    Source filenames vary:
+      - HLTV new format: `team1-vs-team2-m1-dust2.dem` (already canonical)
+      - HLTV older:      `<id>-de_mirage.dem` or `<id>-mirage.dem`
+      - Some packs:      `<event>_de_inferno_<demo>.dem`
+    We scan for both `de_<map>` and bare `<map>` tokens (with word
+    boundaries to avoid false matches like "anubis" inside an event name).
+    Falls back to "unknown" only if no map name appears.
     """
+    import re as _re
     stem = orig_path.stem.lower()
     map_name = "unknown"
+    # Prefer de_* match (most specific) over bare name
     for token, canon in MAP_NORM.items():
         if token in stem:
             map_name = canon
             break
+    else:
+        # No de_* match — try bare canonical names with word boundaries.
+        # Use longest names first to match `dust2` before `dust`.
+        canonical = sorted(set(MAP_NORM.values()), key=len, reverse=True)
+        # Use custom boundary — Python's \b treats `_` as a word char so
+        # `\binferno\b` won't match `event_inferno_demo`. Match on -, _, or
+        # start/end of string.
+        for name in canonical:
+            if _re.search(rf"(?:^|[-_.]){name}(?:[-_.]|$)", stem):
+                map_name = name
+                break
     t1 = _slug(team1)
     t2 = _slug(team2)
     return f"{t1}-vs-{t2}-m{map_index}-{map_name}.dem"

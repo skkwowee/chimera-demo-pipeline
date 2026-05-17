@@ -181,6 +181,7 @@ def run(
                     # Push manifest after EACH match so a crash doesn't lose the
                     # association. Single small file, cheap upload.
                     mf.push(commit_message=f"manifest: +match {summary.match_id}")
+                # Count toward --max-matches regardless of dry-run vs real upload
                 processed_this_run += 1
         except KeyboardInterrupt:
             rprint("[red]interrupted by user[/red]")
