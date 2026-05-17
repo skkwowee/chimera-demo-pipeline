@@ -30,6 +30,7 @@ from rich.table import Table
 from .download import download_rar, extract_dems, normalize_demo_name, _new_scraper
 from .hltv import HLTVScraper, MatchSummary
 from .manifest import Manifest, ManifestEntry
+from .process import run_process
 from .upload import upload_demos
 
 app = typer.Typer(help=__doc__.split("\n\n")[0], no_args_is_help=True)
@@ -248,6 +249,38 @@ def run(
         rprint("[red]Failures:[/red]")
         for mid, why in failed:
             rprint(f"  {mid}: {why}")
+
+
+@app.command()
+def process(
+    repo: str = typer.Option("skkwowee/chimera-cs2"),
+    max_matches: int = typer.Option(5, "--max-matches", "-n",
+                                      help="process at most N new matches this run"),
+    chimera_dir: Path = typer.Option(
+        Path("/home/soone/chimera"), "--chimera-dir",
+        help="path to the chimera repo (contains scripts/ and .venv/)"),
+    downsample: int = typer.Option(
+        8, help="tick downsample factor for build_tick_sequences (8 = 64Hz→8Hz)"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                   help="download + parse + build; SKIP upload of .pt"),
+):
+    """Tick-sequence build step: HF .dem → chimera tick-sequence tensors → HF .pt.
+
+    For each match in the demo manifest not yet present in the tick-sequences
+    manifest:
+      1. download its .dem files into a tempdir
+      2. run chimera's parse_demos.py (→ per-tick parquet + per-event JSON)
+      3. run chimera's build_tick_sequences.py (→ per-round .pt tensors)
+      4. upload outputs under tick_sequences/<match_id>/ on HF
+      5. append a line to processed_tick_sequences_manifest.jsonl
+
+    Match-atomic: per-match tempdir + per-match commit + per-match manifest
+    push, mirroring `run`'s crash-safety discipline.
+    """
+    run_process(
+        repo=repo, chimera_dir=chimera_dir,
+        max_matches=max_matches, dry_run=dry_run, downsample=downsample,
+    )
 
 
 if __name__ == "__main__":
