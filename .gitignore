@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# Temp data — pipeline writes here mid-run; should never be committed
+tmp/
+*.rar
+*.dem
+*.dem.gz
+
+# Local manifest cache (canonical lives on HF)
+.manifest_cache/
+
+# Env files
+.env
+.env.local

@@ -1,0 +1,26 @@
+[project]
+name = "chimera-demo-pipeline"
+version = "0.1.0"
+description = "Scrape HLTV → download CS2 demos → upload to HF dataset. Zero-local-storage demo ingest for chimera."
+requires-python = ">=3.10"
+dependencies = [
+    "curl_cffi>=0.7",             # browser-fingerprint TLS, bypasses HLTV's Cloudflare WAF
+    "beautifulsoup4>=4.12",
+    "lxml>=5.1",
+    "rarfile>=4.2",               # extract .rar (needs `unrar` system binary)
+    "huggingface_hub>=0.24",
+    "hf_transfer>=0.1.9",         # parallel HF upload
+    "typer>=0.12",                # CLI
+    "rich>=13.7",                 # nice terminal output
+]
+
+[project.scripts]
+chimera-demo = "pipeline.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pipeline*"]
