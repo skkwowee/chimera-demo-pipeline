@@ -20,3 +20,8 @@ tmp/
 # Env files
 .env
 .env.local
+
+# Operational logs from background pipeline runs
+ingest.log
+process.log
+hf_upload.log

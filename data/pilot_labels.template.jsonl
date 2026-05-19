@@ -1,0 +1,23 @@
+# pilot_labels — hand-written tactical captions for 30 stratified ticks.
+# Format: one JSON per line.
+# Required fields: demo_stem, round_num, tick (downsampled 8 Hz tick index), caption.
+# Optional field: match_id (HLTV numeric match ID; helps disambiguate but not required).
+#
+# Suggested stratification (5 per category):
+#   - eco / save round
+#   - mid-round (default / lurk / probe)
+#   - execute / commitment moment
+#   - post-plant defense / retake setup
+#   - retake attempt
+#   - clutch (1vN)
+#
+# Replace the examples below with real labels from data you have access to.
+# Demo stems should match exactly what appears in HF tick_sequences metas.
+# To verify a label is loadable, run: python scripts/pilot_minimum.py --labels <this>
+#
+# Example rows (REPLACE — these are placeholders, not real labels):
+{"demo_stem": "spirit-vs-falcons-m1-dust2", "round_num": 1, "tick": 200, "caption": "T-side eco round, walking mid stack with pistols and armor only"}
+{"demo_stem": "spirit-vs-falcons-m1-dust2", "round_num": 3, "tick": 400, "caption": "T-side full buy executing A long with smoke + flash for ct-jungle"}
+{"demo_stem": "spirit-vs-falcons-m1-dust2", "round_num": 5, "tick": 800, "caption": "Post-plant 2v3 on A site, T holding short with awp and rifle"}
+{"demo_stem": "spirit-vs-falcons-m1-dust2", "round_num": 7, "tick": 600, "caption": "T-side mid-round default, three players holding mid for info"}
+{"demo_stem": "spirit-vs-falcons-m1-dust2", "round_num": 9, "tick": 1000, "caption": "1v2 clutch attempt, T-side awper on long isolating duels"}
