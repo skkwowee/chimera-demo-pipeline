@@ -9,6 +9,7 @@ dependencies = [
     "lxml>=5.1",
     "huggingface_hub>=0.24",
     "hf_transfer>=0.1.9",         # parallel HF upload
+    "yt-dlp>=2024.1",             # YouTube VOD discovery for commentary grounding
     "typer>=0.12",                # CLI
     "rich>=13.7",                 # nice terminal output
 ]
