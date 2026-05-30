@@ -248,8 +248,13 @@ def find_vods_for_match(match: dict, n_results: int = 8,
     for demo_file in match.get("demo_files", []):
         midx, mapn = parse_demo_file(demo_file)
         best_c, best_s = _best_over_pool(shared_pool, team1, team2, event, mapn, midx)
-        # Targeted per-map fallback when the shared pool didn't yield a winner
-        if best_s is None or best_s.total < min_score:
+        # Targeted per-map search whenever the shared pool's best didn't
+        # actually hit the MAP NAME. A generic series VOD scores 3.0 (both
+        # teams + event) without identifying the map — that's not a per-map
+        # match even though it clears min_score, so gate on map_hit, not on
+        # the score threshold (the earlier bug: 3.0 is not < min_score=3.0,
+        # so the fallback never fired and every map got the same generic VOD).
+        if best_s is None or not best_s.map_hit:
             q = f"{team1} vs {team2} {event} map {midx} {mapn or ''}".strip()
             tc, ts = _best_over_pool(yt_search(q, n=n_results),
                                      team1, team2, event, mapn, midx)
