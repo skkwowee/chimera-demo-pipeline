@@ -32,18 +32,33 @@ so matching is a title-parse + score, not a fuzzy guess.
   score. Use full `--skip-download` extraction for complete titles + real
   durations (a few seconds slower per search; worth it).
 
-## Stage 2 — audio extraction  ⏳ needs ffmpeg
+## Stages 2 + 3 — audio extraction + ASR  ✅ CODED (`pipeline/transcribe.py`, `chimera-demo transcribe`)
 
-`yt-dlp -x --audio-format wav <url>` → 16 kHz mono. ffmpeg is a system package
-(apt) — not installed in this WSL env; will run on the RunPod worker where the
-heavy pipeline already lives. Keep zero-local-storage discipline: stream to a
-tempdir, transcribe, discard audio.
+Grouped into ONE streaming pass, because they share a machine (ffmpeg + GPU =
+the RunPod worker) and the audio between them is large + transient — no reason
+to persist a separate WAV:
 
-## Stage 3 — ASR  ⏳ needs whisper
+```
+VOD --(yt-dlp + ffmpeg)--> 16kHz mono wav in tempdir
+    --(faster-whisper)--> [(word, t_start, t_end, prob), ...]   (VOD time)
+    --> discard wav, keep only the transcript
+```
 
-`faster-whisper` (pip, CTranslate2 backend) → word-level timestamps. Model
-`large-v3` for accuracy, `distil-large-v3` if throughput-bound. Output: list
-of `(word, t_start_sec, t_end_sec)` in VOD time.
+- `extract_audio`: `yt-dlp -f bestaudio -x` with `ffmpeg:-ac 1 -ar 16000` so
+  the wav is born in exactly the format whisper wants (no second resample).
+- `transcribe_audio`: faster-whisper `large-v3`, `word_timestamps=True`,
+  `vad_filter=True` (drops desk/pause silences → fewer spurious words to align).
+  `language=None` auto-detects (broadcasts are EN official + RU/PT/TR community
+  casts).
+- `transcribe_vod`: the two in one `TemporaryDirectory` pass — wav deleted on
+  exit (success or error), only the ~tens-of-KB transcript kept.
+- Output `Transcript.to_dict()`: segments → word list with `(t, s, e, p)` in
+  VOD seconds. **These VOD-time stamps are exactly what stage 4 aligns to ticks.**
+
+**Runs on the pod, not WSL**: needs `ffmpeg` (apt) + `faster-whisper` (pip) +
+CUDA. The module imports fine without them — faster-whisper is lazy-imported
+inside the function, and the CLI command registers — but actual transcription
+must run where ffmpeg + a GPU exist.
 
 ## Stage 4 — alignment  ⚠️ THE HARD PART
 

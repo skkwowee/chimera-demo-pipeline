@@ -33,6 +33,7 @@ from .manifest import Manifest, ManifestEntry
 from .process import run_process
 from .upload import upload_demos
 from .vod import find_vods_for_match
+from .transcribe import transcribe_vod
 
 app = typer.Typer(help=__doc__.split("\n\n")[0], no_args_is_help=True)
 
@@ -336,6 +337,39 @@ def find_vods(
         rprint(f"\n[bold]Wrote {len(results)} rows to {out}[/bold]")
     matched = sum(1 for r in results if r["video_id"])
     rprint(f"\n[bold]{matched}/{len(results)} maps matched to a VOD[/bold]")
+
+
+@app.command()
+def transcribe(
+    video_id: str = typer.Argument(..., help="YouTube video id (from find-vods)"),
+    out: Path = typer.Option(None, help="write transcript JSON here"),
+    model: str = typer.Option("large-v3", help="faster-whisper model"),
+    device: str = typer.Option("cuda", help="cuda or cpu"),
+    compute_type: str = typer.Option("float16", help="float16/int8/float32"),
+    language: str = typer.Option(None, help="force language (e.g. en); auto if unset"),
+):
+    """Stages 2+3: VOD -> audio -> timestamped transcript (audio discarded).
+
+    Requires ffmpeg + faster-whisper (the RunPod worker, not WSL). The wav is
+    extracted to a tempdir, transcribed, then deleted — only the transcript
+    (timestamped words in VOD time) is kept.
+    """
+    import json as _json
+    rprint(f"[bold]Transcribing https://youtu.be/{video_id}[/bold]")
+    tr = transcribe_vod(video_id, model_name=model, device=device,
+                        compute_type=compute_type, language=language)
+    n_words = len(tr.words())
+    rprint(f"  lang={tr.language} duration={tr.duration:.0f}s "
+           f"segments={len(tr.segments)} words={n_words}")
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(tr.to_dict(), ensure_ascii=False, indent=0))
+        rprint(f"  wrote {out}")
+    else:
+        for s in tr.segments[:5]:
+            rprint(f"  [{s.start:7.1f}-{s.end:7.1f}] {s.text[:70]}")
+        if len(tr.segments) > 5:
+            rprint(f"  ... (+{len(tr.segments)-5} more segments)")
 
 
 if __name__ == "__main__":
