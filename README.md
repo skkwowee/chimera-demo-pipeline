@@ -1,8 +1,12 @@
 # chimera-demo-pipeline
 
-Auto-ingest CS2 pro demos from HLTV into the `skkwowee/chimera-cs2` HuggingFace dataset.
+The data pipeline for the [chimera](https://github.com/skkwowee/chimera) CS2 world model: HLTV → `.dem` → HuggingFace → tick sequences.
 
-**Goal**: scale demo collection without local persistence. Each match is downloaded to a tempdir, extracted, uploaded to HF, and cleaned up. Resumable across crashes/restarts via on-HF manifest.
+This repo ingests pro CS2 demos from HLTV into the `skkwowee/chimera-cs2` HuggingFace dataset and processes them into the per-frame game-state sequences the world model trains on (a causal transformer over 597-d state frames, next-state prediction). Its only job is producing that training data.
+
+**Goal**: scale demo collection and state-sequence extraction without local persistence. Each match is downloaded to a tempdir, extracted, uploaded to HF, processed into tick sequences, and cleaned up. Resumable across crashes/restarts via on-HF manifests.
+
+> **Parked: commentary (phase 2).** The caster-commentary grounding effort (VOD scrape, ASR transcription, demo↔caption alignment) is dormant until the later language phase, when a frozen LLM gets bridged into the world-model latents. Those modules and findings now live in [`parked/commentary/`](parked/commentary/README.md) and are *not* part of the main ingest flow.
 
 ## Install
 
@@ -26,6 +30,8 @@ huggingface-cli login
 
 ## Usage
 
+There are two stages. **`run`** ingests demos (HLTV → `.dem` → HF). **`process`** turns those demos into world-model tick sequences (HF `.dem` → HF tick sequences).
+
 ```bash
 # Scrape (dry, prints listing only)
 chimera-demo scrape --stars 5 --max-matches 10
@@ -33,19 +39,24 @@ chimera-demo scrape --stars 5 --max-matches 10
 # Get one match's demo URL
 chimera-demo fetch-match 2394156 spirit-vs-falcons-pgl-astana-2026
 
-# Full pipeline — scrape + download + extract + upload + manifest
+# Stage 1 — ingest: scrape + download + extract + upload + manifest
 chimera-demo run --stars 3 --max-matches 50 --repo skkwowee/chimera-cs2
 
 # Resume — auto-skips already-processed matches (manifest on HF is truth source)
 chimera-demo run --stars 3 --max-matches 50
 
-# Inspect what's already been processed
+# Stage 2 — process ingested demos into tick sequences (the world-model training data)
+chimera-demo process --max-matches 50
+
+# Inspect what's already been ingested
 chimera-demo manifest --show-last 20
 ```
 
 `stars` is HLTV's match-tier filter (1 = all, 5 = LAN majors only). For training data, stars=3 strikes a good balance between volume and quality.
 
 ## How it works
+
+### Stage 1 — `run` (ingest)
 
 1. **Scrape** HLTV results listings (`/results?stars=N&offset=K`) — paginated, 100 matches per page.
 2. **Skip** any match whose `match_id` already appears in `processed_manifest.jsonl` on HF.
@@ -56,6 +67,18 @@ chimera-demo manifest --show-last 20
 7. **Upload** all `.dem`s for the match in a single atomic HF commit.
 8. **Append** one `ManifestEntry` JSON line to `processed_manifest.jsonl` (per-match commit) so reruns skip this match.
 9. **Cleanup**: `TemporaryDirectory` exit removes everything from local disk.
+
+### Stage 2 — `process` (tick sequences)
+
+For each match in `processed_manifest.jsonl` not yet in `processed_tick_sequences_manifest.jsonl`:
+
+1. **Download** the match's `.dem` files into a tempdir.
+2. **Parse** (chimera's `parse_demos.py`) → per-tick parquet + per-event JSON.
+3. **Build** (chimera's `build_tick_sequences.py`) → per-round `.pt` tensors of game-state frames (the world model's training input), with a `feature_schema` and `manifest.json`. Default downsample 8 (64 Hz → 8 Hz).
+4. **Upload** artifacts under `tick_sequences/<match_id>/` on HF.
+5. **Append** a line to `processed_tick_sequences_manifest.jsonl`.
+
+Both stages are **match-atomic** (per-match tempdir + per-match commit + per-match manifest push), so a crash mid-batch never loses finished matches.
 
 Peak local storage during a run = **1 match worth of files** (~500 MB to 2 GB). No persistent state.
 
@@ -90,6 +113,10 @@ pipeline/
 ├── hltv.py         # scrape match listings + match pages
 ├── download.py     # fetch + extract .rar → .dem files
 ├── upload.py       # push to HF dataset (atomic per-match commit)
-├── manifest.py     # processed-match tracking on HF
+├── manifest.py     # processed-match tracking on HF (both stages)
+├── process.py      # .dem → tick-sequence tensors (stage 2)
 └── cli.py          # `chimera-demo` entry point
+
+parked/
+└── commentary/     # phase-2 caster-commentary tooling + findings (dormant)
 ```
