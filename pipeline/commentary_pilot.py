@@ -283,35 +283,41 @@ LAG_SEC = 4.0       # reaction calls trail it by up to this much
 
 
 def fit_global_offset(demo_anchor_t: list[float], vod_anchor_t: list[float],
-                      max_lag: float = 600.0, step: float = 0.5) -> tuple[float, float]:
+                      max_lag: float = 600.0, step: float = 0.5,
+                      tol: float = 2.0, min_lag: float | None = None,
+                      ) -> tuple[float, float]:
     """Recover VOD->demo offset by cross-correlating two event trains.
 
-    Both inputs are sorted second-stamps of the SAME landmark type (e.g. kills).
-    We slide the VOD train against the demo train and pick the lag maximizing
-    the count of near-coincident events (within `tol`). Returns (offset, score)
+    demo_anchor_t = demo-time stamps of one landmark type (kills). vod_anchor_t =
+    VOD-time stamps of the matching landmark (name mentions). A kill at demo time
+    t maps to VOD time t+offset; we slide offset and count how many kills have AT
+    LEAST ONE name within `tol` (coverage), NOT a greedy 1:1 match — dense names
+    near one kill must not consume anchors for the next. Returns (offset, score)
     where demo_t ~= vod_t - offset. Pure / unit-testable; no deps.
+
+    Note on signal: with lossy auto-caption ASR, peak coverage may be only
+    ~2-4x the chance floor — still a statistically sharp offset (verify the peak
+    is several sigma over the off-peak mean), but per-kill anchoring is sparse.
     """
+    import bisect
     if not demo_anchor_t or not vod_anchor_t:
         return 0.0, 0.0
-    tol = 2.0
-    best_off, best_score = 0.0, -1.0
-    lag = -max_lag
+    names = sorted(vod_anchor_t)
     d = sorted(demo_anchor_t)
+    lo = -max_lag if min_lag is None else min_lag
+    best_off, best_score = lo, -1.0
+    lag = lo
     while lag <= max_lag:
-        shifted = [v - lag for v in vod_anchor_t]
-        # count matches (two-pointer)
-        i = j = score = 0
-        while i < len(d) and j < len(shifted):
-            if abs(d[i] - shifted[j]) <= tol:
-                score += 1; i += 1; j += 1
-            elif d[i] < shifted[j]:
-                i += 1
-            else:
-                j += 1
+        score = 0
+        for t in d:
+            x = t + lag
+            k = bisect.bisect_left(names, x - tol)
+            if k < len(names) and names[k] <= x + tol:
+                score += 1
         if score > best_score:
             best_score, best_off = score, lag
         lag += step
-    return best_off, best_score
+    return float(best_off), float(best_score)
 
 
 def vod_window_for_event(event_demo_t: float, offset: float) -> tuple[float, float]:
@@ -319,3 +325,126 @@ def vod_window_for_event(event_demo_t: float, offset: float) -> tuple[float, flo
     a little later (reaction). This is the lag-sign fix."""
     center = event_demo_t + offset
     return center - LEAD_SEC, center + LAG_SEC
+
+
+# ---------------------------------------------------------------------------
+# transcript-side anchors: player-name mentions (the densest landmark — every
+# kill is a name the demo knows exactly).
+# ---------------------------------------------------------------------------
+_LEET = str.maketrans({"1": "i", "0": "o", "3": "e", "4": "a", "5": "s", "7": "t"})
+
+
+def normalize_nick(s: str) -> str:
+    """Fold a nickname for fuzzy matching: lowercase, de-leet (sh1ro->shiro,
+    zont1x->zontix), strip non-alpha. ASR writes names phonetically so demo
+    'donk'/'sh1ro' must match transcript 'donk'/'shiro'."""
+    return "".join(c for c in s.lower().translate(_LEET) if c.isalpha())
+
+
+def phonetic_skeleton(s: str) -> str:
+    """Consonant skeleton with phonetic folds — collapses the many ASR
+    spellings of a nickname to one key. ASR writes 'tenir'/'tanier' for the
+    demo handle 'tN1R'; both skeleton to 'tnr'. Validated to recover tN1R,
+    m0NESY, kyousuke, kyxsan, chopper, donk, zweih with no common-word hits."""
+    z = normalize_nick(s)
+    for a, b in (("ph", "f"), ("ck", "k"), ("x", "ks"), ("ch", "k"),
+                 ("sh", "s"), ("c", "k"), ("v", "w"), ("q", "k")):
+        z = z.replace(a, b)
+    out: list[str] = []
+    for c in z:
+        if c in "aeiouy":
+            continue
+        if not out or out[-1] != c:
+            out.append(c)
+    return "".join(out)
+
+
+def build_name_vocab(roster: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """roster -> (exact_vocab, skeleton_vocab).
+
+    exact_vocab keys on the de-leeted name (>=3 chars) — handles names whose
+    skeleton is too short/ambiguous (NiKo->nk, TeSeS->ts, sh1ro->sr).
+    skeleton_vocab keys on the phonetic skeleton (>=3 chars only — shorter keys
+    collide with English, e.g. 'ts'=="it's"). A token matches if EITHER fires.
+    """
+    exact: dict[str, str] = {}
+    skel: dict[str, str] = {}
+    for name in roster:
+        n = normalize_nick(name)
+        if len(n) >= 3:
+            exact[n] = name
+        sk = phonetic_skeleton(name)
+        if len(sk) >= 3:
+            skel[sk] = name
+    return exact, skel
+
+
+def find_name_mentions(words: list[Word], roster: list[str]) -> list[float]:
+    """Times (VOD sec) at which a roster name is spoken (exact OR phonetic)."""
+    exact, skel = build_name_vocab(roster)
+    out: list[float] = []
+    for w in words:
+        n = normalize_nick(w.text)
+        if not n:
+            continue
+        if n in exact or phonetic_skeleton(w.text) in skel:
+            out.append(w.t)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# end-to-end alignment: cross-correlate, then map windows to rounds/ticks.
+# ---------------------------------------------------------------------------
+@dataclass
+class Alignment:
+    offset: float          # demo_sec ~= vod_sec - offset
+    score: float           # coincidence count at best offset
+    n_demo: int
+    n_vod: int
+
+
+def align_transcript(words: list[Word], kill_secs: list[float],
+                     roster: list[str], max_lag: float = 1800.0) -> Alignment:
+    """Recover the VOD->demo offset by cross-correlating kill times against
+    name-mention times. A correct pairing yields a sharp, high coincidence
+    score; a wrong VOD scores near chance (this doubles as match verification)."""
+    name_t = find_name_mentions(words, roster)
+    offset, score = fit_global_offset(kill_secs, name_t, max_lag=max_lag)
+    return Alignment(offset=offset, score=score,
+                     n_demo=len(kill_secs), n_vod=len(name_t))
+
+
+def is_structurally_flat(tick_start: int, tick_end: int,
+                         kill_ticks: list[int],
+                         bomb_ticks: list[int]) -> bool:
+    """A window is 'flat' (features ~uninformative -> where exogenous commentary
+    would matter) when nothing discrete happens in it: no kill, no bomb plant."""
+    for kt in kill_ticks:
+        if tick_start <= kt < tick_end:
+            return False
+    for bt in bomb_ticks:
+        if tick_start <= bt < tick_end:
+            return False
+    return True
+
+
+def align_windows(windows: list[Window], alignment: Alignment, anchors,
+                  ) -> list[Window]:
+    """Attach demo_round / demo_tick_range / structurally_flat to each window
+    via the recovered offset. Windows outside any round are dropped."""
+    tr = anchors.tickrate
+    kill_ticks = [k.tick for k in anchors.kills]
+    bomb_ticks = [r.bomb_plant for r in anchors.rounds if r.bomb_plant]
+    out: list[Window] = []
+    for w in windows:
+        demo_s0 = w.t_start - alignment.offset
+        demo_s1 = w.t_end - alignment.offset
+        t0, t1 = int(demo_s0 * tr), int(demo_s1 * tr)
+        rnd = anchors.round_for_tick(t0)
+        if rnd is None:
+            continue
+        w.demo_round = rnd
+        w.demo_tick_range = (t0, t1)
+        w.structurally_flat = is_structurally_flat(t0, t1, kill_ticks, bomb_ticks)
+        out.append(w)
+    return out
