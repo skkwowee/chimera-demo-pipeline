@@ -2,7 +2,7 @@
 
 The data pipeline for the [chimera](https://github.com/skkwowee/chimera) CS2 world model: HLTV → `.dem` → HuggingFace → tick sequences.
 
-This repo ingests pro CS2 demos from HLTV into the `skkwowee/chimera-cs2` HuggingFace dataset and processes them into the per-frame game-state sequences the world model trains on (a causal transformer over 597-d state frames, next-state prediction). Its only job is producing that training data.
+This repo ingests pro CS2 demos from HLTV into the `skkwowee/chimera-cs2` HuggingFace dataset and processes them into the per-frame game-state sequences the world model trains on (the k=4 / 500 ms rollout-native distributional world model, 19M params; v2 = 597-d and v3 = 687-d state frames — see chimera `docs/retrain-recipe.md`). Its only job is producing that training data, to the standard set by chimera's `docs/datasheet.md` defect registry.
 
 **Goal**: scale demo collection and state-sequence extraction without local persistence. Each match is downloaded to a tempdir, extracted, uploaded to HF, processed into tick sequences, and cleaned up. Resumable across crashes/restarts via on-HF manifests.
 
@@ -81,6 +81,15 @@ For each match in `processed_manifest.jsonl` not yet in `processed_tick_sequence
 Both stages are **match-atomic** (per-match tempdir + per-match commit + per-match manifest push), so a crash mid-batch never loses finished matches.
 
 Peak local storage during a run = **1 match worth of files** (~500 MB to 2 GB). No persistent state.
+
+## Provenance & archiving
+
+- **`process` executes the LIVE `--chimera-dir` scripts** (copied into a sandbox at run time). To keep bakes reproducible it refuses to run when those scripts have uncommitted edits (`--allow-dirty` to override), verifies the builder contains the site-from-plant-position fix, and aborts if chimera's venv has `demoparser2 < 0.41.3` (EntityNotFound on Major demos).
+- **Every tick-sequence manifest line records** `schema_version`, `builder_commit`(+dirty), `pipeline_commit`, and `awpy`/`demoparser2` versions. When the builder's `SCHEMA_VERSION` bumps, `process` automatically re-bakes every match recorded under an older version — the corpus-rebuild mechanism, no manifest surgery needed.
+- **Parse intermediates are archived** to `parsed/<match_id>/` (`--archive-parsed`, default on): per-demo `*_ticks.parquet` + 5 event/header JSONs, measured ~12.8 MB/map ≈ 32 MB/match (92-match corpus ≈ 1.2 GB; 1000 matches ≈ 13 GB — 1-3% of the `.dem` bytes already stored). Re-bakes then use `--from-parsed` and skip the 3-6 min/demo awpy parse entirely.
+- **Demos are namespaced** at `demos/<match_id>/<name>.dem` so a rematch of the same teams on the same map slot can't overwrite an earlier match (legacy flat paths still resolve via the manifest).
+- **Failures persist** in `failures.jsonl` on HF; matches with 3+ recorded failures are skipped (not re-downloaded forever) unless `--retry-failed`. Inspect with `chimera-demo failures`.
+- **Legacy local-only demos** (the ~54 stems not on HF) can be pushed with `chimera-demo backfill --demos-dir <dir> [--dry-run]`, which synthesizes manifest entries under a deterministic negative match-id namespace.
 
 ## Why curl_cffi instead of cloudscraper
 
