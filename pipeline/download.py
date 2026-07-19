@@ -65,6 +65,12 @@ def download_rar(demo_url: str, dest: Path,
                         if chunk:
                             f.write(chunk)
                             got += len(chunk)
+                if size and got != size:
+                    # Truncated read — renaming .part into place would hand
+                    # a corrupt rar to the extractor. Raise so we retry.
+                    tmp.unlink(missing_ok=True)
+                    raise IOError(
+                        f"short read: got {got} of {size} bytes")
                 tmp.rename(dest)
                 dt = time.time() - t0
                 rate = got / max(dt, 1e-6) / 1e6
@@ -98,6 +104,11 @@ def _detect_rar_tool() -> str:
     """Return the path of the first available RAR extractor binary."""
     for binary in RAR_TOOLS_PREFERENCE:
         path = shutil.which(binary)
+        if not path:
+            # RunPod/cron PATHs often omit ~/.local/bin — probe it explicitly.
+            local = Path.home() / ".local" / "bin" / binary
+            if local.is_file():
+                path = str(local)
         if path:
             # Exclude unrar-free, which presents as `unrar` but has broken RAR5.
             if binary == "unrar":
@@ -159,6 +170,52 @@ def extract_dems(rar_path: Path, dest_dir: Path) -> list[Path]:
     return sorted(flat)
 
 
+def detect_map_name(stem: str) -> str:
+    """Map name from a demo file stem, or 'unknown'.
+
+    Source filenames vary:
+      - HLTV new format: `team1-vs-team2-m1-dust2.dem` (already canonical)
+      - HLTV older:      `<id>-de_mirage.dem` or `<id>-mirage.dem`
+      - Some packs:      `<event>_de_inferno_<demo>.dem`
+    We scan for both `de_<map>` and bare `<map>` tokens (with word
+    boundaries to avoid false matches like "anubis" inside an event name).
+    """
+    import re as _re
+    stem = stem.lower()
+    # Prefer de_* match (most specific) over bare name
+    for token, canon in MAP_NORM.items():
+        if token in stem:
+            return canon
+    # No de_* match — try bare canonical names with word boundaries.
+    # Use longest names first to match `dust2` before `dust`.
+    canonical = sorted(set(MAP_NORM.values()), key=len, reverse=True)
+    # Use custom boundary — Python's \b treats `_` as a word char so
+    # `\binferno\b` won't match `event_inferno_demo`. Match on -, _, or
+    # start/end of string.
+    for name in canonical:
+        if _re.search(rf"(?:^|[-_.]){name}(?:[-_.]|$)", stem):
+            return name
+    return "unknown"
+
+
+def order_dems_for_series(dems: list[Path], hltv_maps: list[str]) -> list[Path]:
+    """Order extracted .dem files so map_index reflects the SERIES order.
+
+    Old-format archive names (`<id>-de_mirage.dem`) carry no mN token, so
+    sorted-filename order can misstate m1/m2/m3. When no filename has an mN
+    token and the match page gave us the map order, sort by each demo's map
+    position in `hltv_maps` (unknown maps last, original order preserved as
+    tie-break). Filenames WITH mN tokens already sort correctly.
+    """
+    import re as _re
+    if not hltv_maps or any(_re.search(r"(?:^|-)m\d+-", d.stem.lower())
+                            for d in dems):
+        return dems
+    order = {m.lower(): i for i, m in enumerate(hltv_maps)}
+    return sorted(dems, key=lambda d: (
+        order.get(detect_map_name(d.stem), len(order)),))
+
+
 def normalize_demo_name(orig_path: Path, team1: str, team2: str,
                          match_id: int, map_index: int) -> str:
     """Build the canonical name used in chimera/data/demos/*.dem.
@@ -167,33 +224,9 @@ def normalize_demo_name(orig_path: Path, team1: str, team2: str,
         furia-vs-vitality-m1-mirage.dem
         spirit-vs-natus-vincere-m2-dust2.dem
 
-    Source filenames vary:
-      - HLTV new format: `team1-vs-team2-m1-dust2.dem` (already canonical)
-      - HLTV older:      `<id>-de_mirage.dem` or `<id>-mirage.dem`
-      - Some packs:      `<event>_de_inferno_<demo>.dem`
-    We scan for both `de_<map>` and bare `<map>` tokens (with word
-    boundaries to avoid false matches like "anubis" inside an event name).
-    Falls back to "unknown" only if no map name appears.
+    Falls back to "unknown" only if no map name appears (see detect_map_name).
     """
-    import re as _re
-    stem = orig_path.stem.lower()
-    map_name = "unknown"
-    # Prefer de_* match (most specific) over bare name
-    for token, canon in MAP_NORM.items():
-        if token in stem:
-            map_name = canon
-            break
-    else:
-        # No de_* match — try bare canonical names with word boundaries.
-        # Use longest names first to match `dust2` before `dust`.
-        canonical = sorted(set(MAP_NORM.values()), key=len, reverse=True)
-        # Use custom boundary — Python's \b treats `_` as a word char so
-        # `\binferno\b` won't match `event_inferno_demo`. Match on -, _, or
-        # start/end of string.
-        for name in canonical:
-            if _re.search(rf"(?:^|[-_.]){name}(?:[-_.]|$)", stem):
-                map_name = name
-                break
+    map_name = detect_map_name(orig_path.stem)
     t1 = _slug(team1)
     t2 = _slug(team2)
     return f"{t1}-vs-{t2}-m{map_index}-{map_name}.dem"

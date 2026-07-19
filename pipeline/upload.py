@@ -13,21 +13,29 @@ from huggingface_hub import HfApi, CommitOperationAdd
 
 def upload_demos(api: HfApi, repo_id: str, dem_paths: list[Path],
                   repo_type: str = "dataset",
-                  commit_message: str | None = None) -> list[str]:
-    """Upload a list of local .dem files to demos/<name>.dem on the HF repo
-    in a SINGLE commit (atomic per-match — either all maps of a series land
-    or none do).
+                  commit_message: str | None = None,
+                  match_id: int | None = None) -> list[str]:
+    """Upload a list of local .dem files to the HF repo in a SINGLE commit
+    (atomic per-match — either all maps of a series land or none do).
+
+    With `match_id`, files land at demos/<match_id>/<name>.dem — canonical
+    filenames contain no match id, so a rematch of the same teams on the
+    same map slot would otherwise silently OVERWRITE the earlier match's
+    .dem at the flat demos/<name>.dem path (create_commit replaces existing
+    paths without warning). Old flat paths keep working for reads via the
+    manifest's recorded demo_files.
 
     Returns the list of `path_in_repo` strings on success.
     """
     if not dem_paths:
         return []
+    prefix = f"demos/{match_id}" if match_id is not None else "demos"
     ops = []
     repo_paths = []
     for p in dem_paths:
         if not p.exists():
             raise FileNotFoundError(p)
-        repo_path = f"demos/{p.name}"
+        repo_path = f"{prefix}/{p.name}"
         repo_paths.append(repo_path)
         ops.append(CommitOperationAdd(
             path_in_repo=repo_path,

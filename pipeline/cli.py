@@ -27,9 +27,12 @@ from huggingface_hub import HfApi
 from rich import print as rprint
 from rich.table import Table
 
-from .download import download_rar, extract_dems, normalize_demo_name, _new_scraper
-from .hltv import HLTVScraper, MatchSummary
-from .manifest import Manifest, ManifestEntry
+from .download import (download_rar, extract_dems, normalize_demo_name,
+                       order_dems_for_series, detect_map_name, _new_scraper)
+from .hltv import HLTVScraper, MatchSummary, ScrapeLayoutError
+from .manifest import (Manifest, ManifestEntry, FailureEntry,
+                       FAILURES_MANIFEST_PATH, record_failure,
+                       should_skip_failed)
 from .process import run_process
 from .upload import upload_demos
 
@@ -126,6 +129,9 @@ def run(
         5000, "--scan-limit",
         help="max HLTV listings to walk before giving up on filters. Bumps if "
              "your --team filter is narrow and most listings don't match."),
+    retry_failed: bool = typer.Option(
+        False, "--retry-failed",
+        help="retry matches with >=3 recorded failures in failures.jsonl"),
 ):
     """Full pipeline: HLTV → demo .rar → .dem → HF dataset (with manifest update).
 
@@ -139,10 +145,17 @@ def run(
     mf.load()
     rprint(f"  {len(mf.entries)} matches already processed")
 
+    fail_mf = Manifest(api, repo, path=FAILURES_MANIFEST_PATH,
+                       entry_cls=FailureEntry)
+    fail_mf.load()
+    if fail_mf.entries:
+        rprint(f"  {len(fail_mf.entries)} matches with recorded failures")
+
     scraper = HLTVScraper()
     binary_scraper = _new_scraper()
     processed_this_run = 0
     skipped = 0
+    skipped_failed = 0
     failed: list[tuple[int, str]] = []
 
     # --top-teams overrides --team with the current HLTV top tier
@@ -186,22 +199,38 @@ def run(
         if not matches_filters(summary):
             filtered_out += 1
             continue
+        if should_skip_failed(fail_mf, summary.match_id, retry_failed):
+            skipped_failed += 1
+            continue
         rprint(f"\n[cyan]→ match {summary.match_id}: {summary.team1} vs {summary.team2} "
                f"({summary.event}, {summary.score}, {summary.stars}★)[/cyan]")
+        stage = "scrape"
         try:
             md = scraper.fetch_match(summary.match_id, summary.slug)
             if not md.demo_url:
-                rprint(f"  [yellow]no demo URL; skipping[/yellow]")
+                # _parse_match verified the demo SECTION exists (else it
+                # raises ScrapeLayoutError) — this is 'not released yet'.
+                rprint(f"  [yellow]no demo URL (not released yet?); skipping[/yellow]")
                 failed.append((summary.match_id, "no_demo_url"))
+                if not dry_run:
+                    record_failure(fail_mf, summary.match_id, "scrape",
+                                   "no_demo_url")
+                    fail_mf.push(commit_message=(
+                        f"failures: match {summary.match_id}"))
                 continue
             with tempfile.TemporaryDirectory(prefix="chimera_demo_") as tmpd:
                 tmp = Path(tmpd)
                 rar = tmp / f"{summary.match_id}.rar"
                 rprint(f"  downloading {md.demo_url} → {rar.name}")
+                stage = "download"
                 download_rar(md.demo_url, rar, scraper=binary_scraper)
                 rprint(f"  extracting .dem files...")
+                stage = "extract"
                 dems = extract_dems(rar, tmp)
                 rprint(f"  {len(dems)} .dem files extracted")
+                # Series order: filenames with mN tokens sort correctly;
+                # old-format names are ordered by the match page's map list.
+                dems = order_dems_for_series(dems, md.maps)
                 # Rename to canonical chimera form before upload
                 renamed: list[Path] = []
                 for i, dem in enumerate(dems, start=1):
@@ -218,13 +247,17 @@ def run(
                     rprint(f"  [yellow][DRY] skip upload of {len(renamed)} files "
                            f"({bytes_total/1e6:.0f} MB)[/yellow]")
                 else:
+                    stage = "upload"
                     rprint(f"  uploading {len(renamed)} files ({bytes_total/1e6:.0f} MB)...")
+                    # Namespaced by match_id — a rematch of the same teams on
+                    # the same map slot must not overwrite the earlier .dem.
                     repo_paths = upload_demos(
                         api, repo, renamed,
                         commit_message=(
                             f"Add {summary.team1} vs {summary.team2} ({summary.event}) "
                             f"— {len(renamed)} maps, match {summary.match_id}"
                         ),
+                        match_id=summary.match_id,
                     )
                     entry = ManifestEntry(
                         match_id=summary.match_id, slug=summary.slug,
@@ -232,6 +265,8 @@ def run(
                         event=summary.event, score=summary.score,
                         stars=summary.stars, date_unix=summary.date_unix,
                         demo_files=repo_paths, bytes_total=bytes_total,
+                        demo_url=md.demo_url, demo_id=md.demo_id,
+                        hltv_maps=list(md.maps),
                     )
                     mf.add(entry)
                     # Push manifest after EACH match so a crash doesn't lose the
@@ -242,12 +277,24 @@ def run(
         except KeyboardInterrupt:
             rprint("[red]interrupted by user[/red]")
             sys.exit(130)
+        except ScrapeLayoutError:
+            # Layout drift is NOT a per-match failure — abort loudly.
+            raise
         except Exception as e:
-            rprint(f"  [red]failed: {type(e).__name__}: {e}[/red]")
+            rprint(f"  [red]failed [{stage}]: {type(e).__name__}: {e}[/red]")
             failed.append((summary.match_id, f"{type(e).__name__}: {e}"))
+            if not dry_run:
+                try:
+                    record_failure(fail_mf, summary.match_id, stage,
+                                   f"{type(e).__name__}: {e}"[:500])
+                    fail_mf.push(commit_message=(
+                        f"failures: match {summary.match_id}"))
+                except Exception as pe:
+                    rprint(f"  [red]could not persist failure: {pe}[/red]")
 
     rprint(f"\n[bold green]Done.[/bold green] "
            f"processed={processed_this_run} skipped={skipped} "
+           f"skipped_failed={skipped_failed} "
            f"filtered_out={filtered_out} scanned={scanned} failed={len(failed)}")
     if failed:
         rprint("[red]Failures:[/red]")
@@ -267,16 +314,34 @@ def process(
         8, help="tick downsample factor for build_tick_sequences (8 = 64Hz→8Hz)"),
     dry_run: bool = typer.Option(False, "--dry-run",
                                    help="download + parse + build; SKIP upload of .pt"),
+    archive_parsed: bool = typer.Option(
+        True, "--archive-parsed/--no-archive-parsed",
+        help="also upload the parse intermediates (parquet + event JSONs, "
+             "~32 MB/match) to parsed/<match_id>/ so future schema changes "
+             "re-run only the build step, not the awpy parse"),
+    from_parsed: bool = typer.Option(
+        False, "--from-parsed",
+        help="rebake path: download parsed/<match_id>/ instead of demos/ and "
+             "skip the awpy parse (falls back to demos when no archive)"),
+    retry_failed: bool = typer.Option(
+        False, "--retry-failed",
+        help="retry matches with >=3 recorded failures in failures.jsonl"),
+    allow_dirty: bool = typer.Option(
+        False, "--allow-dirty",
+        help="proceed even when chimera's builder scripts have uncommitted "
+             "edits (bakes become unreproducible)"),
 ):
     """Tick-sequence build step: HF .dem → chimera tick-sequence tensors → HF .pt.
 
-    For each match in the demo manifest not yet present in the tick-sequences
-    manifest:
+    For each match in the demo manifest not yet in the tick-sequences
+    manifest — or baked under an OLD schema_version (re-bake):
       1. download its .dem files into a tempdir
       2. run chimera's parse_demos.py (→ per-tick parquet + per-event JSON)
-      3. run chimera's build_tick_sequences.py (→ per-round .pt tensors)
-      4. upload outputs under tick_sequences/<match_id>/ on HF
-      5. append a line to processed_tick_sequences_manifest.jsonl
+      3. archive the parse bundle to parsed/<match_id>/ (default on)
+      4. run chimera's build_tick_sequences.py (→ per-round .pt tensors)
+      5. upload outputs under tick_sequences/<match_id>/ on HF
+      6. append a line to processed_tick_sequences_manifest.jsonl
+         (with schema_version + builder/pipeline commits + parser versions)
 
     Match-atomic: per-match tempdir + per-match commit + per-match manifest
     push, mirroring `run`'s crash-safety discipline.
@@ -284,7 +349,107 @@ def process(
     run_process(
         repo=repo, chimera_dir=chimera_dir,
         max_matches=max_matches, dry_run=dry_run, downsample=downsample,
+        archive_parsed=archive_parsed, from_parsed=from_parsed,
+        retry_failed=retry_failed, allow_dirty=allow_dirty,
     )
+
+
+@app.command()
+def failures(
+    repo: str = typer.Option("skkwowee/chimera-cs2"),
+):
+    """List the persistent failure records (failures.jsonl on HF)."""
+    api = HfApi()
+    fail_mf = Manifest(api, repo, path=FAILURES_MANIFEST_PATH,
+                       entry_cls=FailureEntry)
+    fail_mf.load()
+    rprint(f"[bold]Failures:[/bold] {len(fail_mf.entries)} matches on {repo}")
+    if fail_mf.entries:
+        table = Table("match_id", "stage", "attempts", "last_attempt", "reason")
+        for e in fail_mf.entries:
+            table.add_row(str(e.match_id), e.stage, str(e.attempts),
+                          time.strftime("%Y-%m-%d %H:%M",
+                                        time.gmtime(e.last_attempt_unix)),
+                          e.reason[:80])
+        rprint(table)
+
+
+@app.command()
+def backfill(
+    demos_dir: Path = typer.Option(..., "--demos-dir",
+                                     help="local dir with canonical *.dem files"),
+    repo: str = typer.Option("skkwowee/chimera-cs2"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                   help="print the missing-stem diff; no uploads"),
+):
+    """Backfill legacy LOCAL-ONLY demos to HF.
+
+    HF is canonical but NOT a superset of the old local corpus (~54 of 81
+    local demo stems have a single copy on one WSL2 disk). This scans
+    --demos-dir, diffs against every .dem already on HF (flat or
+    namespaced), groups missing stems by team pair, uploads each group, and
+    appends synthetic manifest entries (deterministic negative match_id,
+    event='local_backfill') so run/process skip-logic keys on match_id
+    without colliding with HLTV ids.
+    """
+    import hashlib
+    import re as _re
+
+    local_dems = sorted(demos_dir.glob("*.dem"))
+    if not local_dems:
+        rprint(f"[red]no .dem files in {demos_dir}[/red]")
+        raise typer.Exit(1)
+
+    api = HfApi()
+    rprint(f"[bold]Listing demos on {repo}...[/bold]")
+    on_hf = {p.rsplit("/", 1)[-1]
+             for p in api.list_repo_files(repo, repo_type="dataset")
+             if p.startswith("demos/") and p.endswith(".dem")}
+    rprint(f"  {len(on_hf)} .dem files on HF; {len(local_dems)} local")
+
+    missing = [p for p in local_dems if p.name not in on_hf]
+    rprint(f"[bold]Missing from HF: {len(missing)}[/bold]")
+    if not missing:
+        return
+
+    # Group by team-pair token so each pseudo-match uploads atomically
+    def group_key(stem: str) -> str:
+        return _re.sub(r"-m\d+-\w+$", "", stem.lower())
+
+    groups: dict[str, list[Path]] = {}
+    for p in missing:
+        groups.setdefault(group_key(p.stem), []).append(p)
+
+    mf = Manifest(api, repo)
+    mf.load()
+    for key in sorted(groups):
+        paths = groups[key]
+        # Deterministic negative id — never collides with HLTV's positive ids
+        synth_id = -int(hashlib.sha1(key.encode()).hexdigest()[:12], 16)
+        names = [p.name for p in paths]
+        if mf.has(synth_id):
+            rprint(f"  [yellow]skip {key} (already backfilled)[/yellow]")
+            continue
+        bytes_total = sum(p.stat().st_size for p in paths)
+        if dry_run:
+            rprint(f"  [yellow][DRY] {key} (match_id={synth_id}): "
+                   f"{names} ({bytes_total/1e6:.0f} MB)[/yellow]")
+            continue
+        rprint(f"  uploading {key} → demos/ ({len(paths)} files, "
+               f"{bytes_total/1e6:.0f} MB)")
+        repo_paths = upload_demos(
+            api, repo, paths,
+            commit_message=f"Backfill local-only demos: {key}",
+        )
+        t1, _, t2 = key.partition("-vs-")
+        mf.add(ManifestEntry(
+            match_id=synth_id, slug=f"local-{key}",
+            team1=t1, team2=t2 or "", event="local_backfill",
+            score="", stars=0, date_unix=None,
+            demo_files=repo_paths, bytes_total=bytes_total,
+        ))
+        mf.push(commit_message=f"manifest: +backfill {key}")
+    rprint("[bold green]Backfill done.[/bold green]")
 
 
 if __name__ == "__main__":

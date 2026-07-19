@@ -39,6 +39,14 @@ DEFAULT_HEADERS = {
 DEFAULT_REQUEST_DELAY_SEC = 5.0
 
 
+class ScrapeLayoutError(RuntimeError):
+    """HLTV returned a 200 page our selectors can't parse — layout drift.
+
+    Raised so drift fails LOUDLY instead of masquerading as end-of-listing
+    ('Done. processed=0', exit 0) or as a transient 'no_demo_url' failure.
+    """
+
+
 @dataclass
 class MatchSummary:
     """One row from the results page."""
@@ -103,7 +111,16 @@ class HLTVScraper:
         """
         url = f"{RESULTS_URL}?stars={stars}&offset={offset}"
         html = self._get(url)
-        return self._parse_results(html)
+        results = self._parse_results(html)
+        # An empty FIRST page on a 200 response means the result-con markup
+        # drifted (there are always recent results); empty pages at deep
+        # offsets remain normal end-of-listing.
+        if not results and offset == 0:
+            raise ScrapeLayoutError(
+                f"0 matches parsed from {url} (HTTP 200, {len(html)} bytes) "
+                f"— 'div.result-con' selector no longer matches; HLTV layout "
+                f"changed?")
+        return results
 
     @staticmethod
     def _parse_results(html: str) -> list[MatchSummary]:
@@ -164,6 +181,19 @@ class HLTVScraper:
             demo_url = HLTV_BASE + a["href"]
             m = re.search(r"/download/demo/(\d+)", a["href"])
             demo_id = int(m.group(1)) if m else None
+        else:
+            # Distinguish 'demo not released yet' (retryable skip: the
+            # GOTV/streams section exists but has no download link yet)
+            # from 'selectors broke' (no trace of the demo section at all
+            # on a 200 match page -> layout drift, fail loudly).
+            has_demo_section = bool(
+                soup.select_one(".stream-box")
+                or soup.select_one(".streams")
+                or soup.find(string=re.compile(r"GOTV", re.I)))
+            if not has_demo_section:
+                raise ScrapeLayoutError(
+                    f"match {match_id}: no /download/demo/ link AND no "
+                    f"GOTV/stream-box section — match-page selectors broke?")
 
         maps: list[str] = []
         # Map names on map-tabs: <div class="mapname">Mirage</div>
