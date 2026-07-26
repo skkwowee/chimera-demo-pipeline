@@ -26,3 +26,5 @@ ingest.log
 process.log
 hf_upload.log
 logs/*.log
+*.log
+*.log.gz
