@@ -137,13 +137,11 @@ class FailureEntry:
 class Manifest:
     """Read-modify-append the JSONL manifest on the HF dataset.
 
-    For efficiency, callers should `load()` once at the start of a batch,
-    accumulate entries with `add()`, and `commit_batch()` once at the end
-    to push a single combined manifest. Each individual demo upload still
-    commits separately (so a kill mid-batch leaves the demos on HF;
-    the manifest line is only added when the demo is confirmed uploaded).
+    Usage: `load()` once at batch start, then `add()` + `push()` after each
+    confirmed upload. A manifest line is only added once its artifacts are
+    on HF, so a kill mid-batch leaves finished matches consistent.
 
-    `path` lets you keep multiple parallel manifests on the same repo
+    `path` keeps multiple parallel manifests on the same repo
     (e.g. processed_manifest.jsonl for demos vs.
     processed_tick_sequences_manifest.jsonl for derived `.pt` chunks).
     """

@@ -16,12 +16,11 @@ cd chimera-demo-pipeline
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# System dep — needed for extracting .rar archives from HLTV.
-# `unar` is recommended: GPL, full RAR5 support, in standard repos.
+# System dep — extracts HLTV's .rar archives. Auto-detection prefers
+# 7z, then unar, then unrar. Either apt package works.
 # (Don't use `unrar-free` — incomplete RAR5 support, may silently fail.)
-sudo apt install unar         # Linux (preferred)
-# or:
-sudo apt install p7zip-full   # Linux (alternative; auto-detected as fallback)
+sudo apt install p7zip-full   # Linux
+sudo apt install unar         # Linux (alternative; GPL, full RAR5)
 brew install unar             # macOS
 
 # HF auth (needs write access to the target dataset repo)
@@ -52,7 +51,7 @@ chimera-demo process --max-matches 50
 chimera-demo manifest --show-last 20
 ```
 
-`stars` is HLTV's match-tier filter (1 = all, 5 = LAN majors only). For training data, stars=3 strikes a good balance between volume and quality.
+`stars` is HLTV's match-tier filter (1 = all, 5 = LAN majors only). For training data, stars=3 balances volume and quality.
 
 ## How it works
 
@@ -62,7 +61,7 @@ chimera-demo manifest --show-last 20
 2. **Skip** any match whose `match_id` already appears in `processed_manifest.jsonl` on HF.
 3. **Fetch match page** to extract the `/download/demo/<id>` URL.
 4. **Stream-download** the `.rar` (multi-map series → one rar containing N `.dem` files) to `tempfile.TemporaryDirectory()`.
-5. **Extract** `.dem` files (`rarfile` + system `unrar`).
+5. **Extract** `.dem` files (shell-out to `7z` / `unar` / `unrar`).
 6. **Rename** to canonical `team1-vs-team2-mN-map.dem` form (matches existing demos in the dataset).
 7. **Upload** all `.dem`s for the match in a single atomic HF commit.
 8. **Append** one `ManifestEntry` JSON line to `processed_manifest.jsonl` (per-match commit) so reruns skip this match.

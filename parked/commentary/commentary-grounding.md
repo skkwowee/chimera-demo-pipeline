@@ -1,10 +1,10 @@
 # Commentary grounding: VOD → demo alignment
 
-Goal: attach real caster commentary (Twitch/YouTube) to demo ticks, so we can
-ground the L3 verbalization layer in authentic human tactical language instead
-of model-generated captions (which are circular — see chimera's
-`data/captions/CROSSVAL.md`: Claude captions only paraphrase the structured
-features they were given, so they can't carry signal those features lack).
+Goal: attach real caster commentary (Twitch/YouTube) to demo ticks, grounding
+the L3 verbalization layer in human tactical language instead of
+model-generated captions. Model captions are circular — per chimera's
+`data/captions/CROSSVAL.md`, Claude captions only paraphrase the structured
+features they were given, so they can't carry signal those features lack.
 
 Full pipeline:
 
@@ -34,8 +34,8 @@ so matching is a title-parse + score, not a fuzzy guess.
 
 ## Stages 2 + 3 — audio extraction + ASR  ✅ CODED (`pipeline/transcribe.py`, `chimera-demo transcribe`)
 
-Grouped into ONE streaming pass, because they share a machine (ffmpeg + GPU =
-the RunPod worker) and the audio between them is large + transient — no reason
+One streaming pass: both stages need the same machine (ffmpeg + GPU = the
+RunPod worker) and the intermediate audio is large and transient — no reason
 to persist a separate WAV:
 
 ```

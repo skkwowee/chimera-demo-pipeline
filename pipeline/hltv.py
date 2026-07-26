@@ -1,8 +1,8 @@
 """HLTV scraper: match listings + match pages.
 
-HLTV uses Cloudflare bot protection. We use cloudscraper (JS challenge solver
-in Python) and pace requests conservatively. If cloudscraper starts failing,
-the fallback is curl-cffi with a real browser TLS fingerprint.
+HLTV sits behind Cloudflare bot protection. We use curl_cffi with a real
+browser TLS fingerprint (see DEFAULT_IMPERSONATE) and pace requests
+conservatively.
 
 Public surfaces:
     fetch_results(stars=3, offset=0)         -> list[MatchSummary]
@@ -80,7 +80,6 @@ class HLTVScraper:
 
     def _get(self, url: str) -> str:
         """GET with delay + retry. Raises on non-200."""
-        # Rate limit
         wait = self.delay - (time.time() - self._last_request_ts)
         if wait > 0:
             time.sleep(wait)

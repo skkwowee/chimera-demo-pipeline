@@ -52,7 +52,6 @@ def download_rar(demo_url: str, dest: Path,
     last_err: Exception | None = None
     for attempt in range(max_retries):
         try:
-            # curl_cffi's stream mode: pass stream=True, iterate with iter_content
             r = s.get(demo_url, stream=True, timeout=300)
             try:
                 r.raise_for_status()
@@ -87,11 +86,10 @@ def download_rar(demo_url: str, dest: Path,
     raise RuntimeError(f"download_rar failed: {demo_url} ({last_err})")
 
 
-# Direct shell-out to a RAR extractor — we used to use the `rarfile` Python
-# lib, but its RAR5 metadata parser fails on many HLTV archives with
-# "BadRarFile: Failed the read enough data: req=65536 got=176". Shelling
-# out to a real extractor (which has a complete RAR5 implementation) avoids
-# this entirely. Preference order:
+# Shell out to a RAR extractor. The `rarfile` Python lib fails on many
+# HLTV RAR5 archives with "BadRarFile: Failed the read enough data:
+# req=65536 got=176"; real extractors have complete RAR5 support.
+# Preference order:
 #   7z      — p7zip-full; clean RAR5 support; usually pre-installed
 #   unar    — The Unarchiver; GPL; full RAR3 + RAR5; lsar to list
 #   unrar   — RARLAB official (Debian non-free); fastest
@@ -134,20 +132,16 @@ def _detect_rar_tool() -> str:
 def extract_dems(rar_path: Path, dest_dir: Path) -> list[Path]:
     """Extract all .dem from rar_path into dest_dir. Returns list of .dem paths.
 
-    Shells out to 7z / unar / unrar (whichever is found first). Each tool
-    has slightly different invocation; we normalize via per-tool branches.
+    Shells out to 7z / unar / unrar, whichever is found first.
     """
     tool = _detect_rar_tool()
     dest_dir.mkdir(parents=True, exist_ok=True)
     binary = Path(tool).name
     if binary == "7z":
-        # 7z x archive.rar -odest_dir   (extract with full paths) → flatten after
         cmd = [tool, "x", "-y", str(rar_path), f"-o{dest_dir}", "*.dem", "-r"]
     elif binary == "unar":
-        # unar -o dest_dir archive.rar
         cmd = [tool, "-o", str(dest_dir), "-f", str(rar_path)]
     else:  # unrar
-        # unrar x -y archive.rar dest_dir/
         cmd = [tool, "x", "-y", str(rar_path), str(dest_dir) + "/"]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:

@@ -3,14 +3,14 @@
 Subcommands:
     scrape          — print N matches from HLTV (dry run, no download)
     fetch-match     — print one match's metadata + demo URL
-    run             — full pipeline: scrape → download → extract → upload → manifest
-    manifest        — show current state of the on-HF processed manifest
+    run             — stage 1 ingest: scrape → download → extract → upload → manifest
+    process         — stage 2: HF .dem → tick-sequence tensors on HF
+    manifest        — show the on-HF processed manifest
+    failures        — list persistent failure records (failures.jsonl)
+    backfill        — push legacy local-only demos to HF
 
-Designed to be runnable from a fresh RunPod worker:
-    # one-shot batch
-    chimera-demo run --stars 3 --max-matches 50 --repo skkwowee/chimera-cs2
-
-    # resume — auto-skips already-processed (manifest on HF is source of truth)
+Runnable from a fresh RunPod worker; reruns auto-skip already-processed
+matches (the manifest on HF is the source of truth):
     chimera-demo run --stars 3 --max-matches 50 --repo skkwowee/chimera-cs2
 """
 
@@ -158,7 +158,6 @@ def run(
     skipped_failed = 0
     failed: list[tuple[int, str]] = []
 
-    # --top-teams overrides --team with the current HLTV top tier
     TOP_TEAMS = [
         "vitality", "spirit", "falcons", "mouz", "natus vincere", "faze",
         "g2", "mongolz", "astralis", "liquid", "aurora", "paris legion",
@@ -231,7 +230,6 @@ def run(
                 # Series order: filenames with mN tokens sort correctly;
                 # old-format names are ordered by the match page's map list.
                 dems = order_dems_for_series(dems, md.maps)
-                # Rename to canonical chimera form before upload
                 renamed: list[Path] = []
                 for i, dem in enumerate(dems, start=1):
                     new_name = normalize_demo_name(

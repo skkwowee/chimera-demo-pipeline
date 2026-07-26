@@ -426,10 +426,8 @@ def process_one(
         rprint(f"  [bold]artifacts[/bold]: " + ", ".join(
             f"{n} ({s:.1f} MB)" for n, s in sizes_mb.items()))
 
-        # Pull stats out of train.pt header for the manifest line. Lazy import
-        # so the pipeline venv isn't forced to have torch.
-        # If chimera venv doesn't share site-packages with pipeline venv we
-        # can't easily load the .pt here. So inspect via the chimera python.
+        # Stats for the manifest line, read via the chimera python — the
+        # pipeline venv has no torch and must not grow that dependency.
         n_rounds, total_ticks, feature_dim = _summarize_pt(chimera_dir, train_pt)
 
         schema_version = _read_schema_version(ts_dir) or prov.get("schema_version")
