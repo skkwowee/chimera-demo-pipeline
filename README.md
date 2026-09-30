@@ -35,6 +35,9 @@ There are two stages. **`run`** ingests demos (HLTV → `.dem` → HF). **`proce
 # Scrape (dry, prints listing only)
 chimera-demo scrape --stars 5 --max-matches 10
 
+# Fresh high-rated matches only (listing; no downloads)
+chimera-demo scrape --stars 4 --since 2026-08-01 --max-matches 10
+
 # Get one match's demo URL
 chimera-demo fetch-match 2394156 spirit-vs-falcons-pgl-astana-2026
 
@@ -51,7 +54,15 @@ chimera-demo process --max-matches 50
 chimera-demo manifest --show-last 20
 ```
 
-`stars` is HLTV's match-tier filter (1 = all, 5 = LAN majors only). For training data, stars=3 balances volume and quality.
+`stars` is HLTV's match-rating filter, not a game-version or date filter.
+Use event selection alongside it when collecting a specific tournament tier.
+
+`scrape` and `run` default to `--since 2023-09-27` and reject missing match
+dates. Set a newer cutoff for fresh collections. Raw uploads also require a
+Source 2 demo header. These guards do not retroactively certify the old archive:
+the [September audit](reports/2026-09-30-ingest-audit.json) found CS:GO files and
+missing dates there. New collections stay separate from Chimera's frozen split;
+archiving demos does not authorize baking or merging them into training.
 
 ## How it works
 

@@ -25,6 +25,16 @@ def make_scraper(html: str) -> HLTVScraper:
 
 
 class TestParseResults:
+    def test_outer_date_and_ingest_cutoff(self):
+        html = read("results.html").replace('<div class="result-con">',
+            '<div class="result-con" data-zonedgrouping-entry-unix="1750086400000">')
+        scraper = make_scraper(html)
+        assert HLTVScraper._parse_results(html)[0].date_unix == 1750086400
+        assert list(scraper.iter_matches(stars=3, since_unix=1750086401)) == []
+        undated = read("results.html").replace("data-zonedgrouping-entry-unix", "missing-date")
+        with pytest.raises(ScrapeLayoutError, match="date missing"):
+            list(make_scraper(undated).iter_matches(since_unix=1))
+
     def test_extracts_known_matches(self):
         out = HLTVScraper._parse_results(read("results.html"))
         assert len(out) == 2

@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-30",
+  "archive": {
+    "repo": "skkwowee/chimera-cs2",
+    "revision": "2fb9aa50bad67536c04a5b8f6aa2f4b6f908ad71",
+    "manifest_sha256": "6976dc13ba7de3c09ebf59410794778d2c64c2903badda991b86dbcc20947f98",
+    "matches": 390,
+    "demo_files": 984,
+    "manifest_reported_bytes": 412163860242,
+    "matches_missing_dates": 390,
+    "event_names_explicitly_ending_in_pre_2023_year": 105,
+    "confirmed_source1_sample": "demos/2331597/astralis-vs-faze-m1-dust2.dem",
+    "sample_first_8_bytes_hex": "484c3244454d4f00",
+    "scope": "Raw archive audit, not evidence that frozen training tensors contain CS:GO. No files deleted or relabeled."
+  },
+  "canonical_corpus": {
+    "val_v2m_p2_exists": true,
+    "val_v3m_p2_exists": true,
+    "train_v2m_p2_exists": false,
+    "train_v3m_p2_exists": false,
+    "training_blobs_loaded": false,
+    "split_changed": false
+  },
+  "fresh_candidates": {
+    "event": "BLAST Open Porto 2026",
+    "source": "https://www.hltv.org/results?event=8249",
+    "selection": "All five playoff series, September 4-6; candidate list only, not a new training split.",
+    "matches": [
+      "https://www.hltv.org/matches/2396947/falcons-vs-g2-blast-open-porto-2026",
+      "https://www.hltv.org/matches/2396948/furia-vs-vitality-blast-open-porto-2026",
+      "https://www.hltv.org/matches/2396949/spirit-vs-falcons-blast-open-porto-2026",
+      "https://www.hltv.org/matches/2396950/mouz-vs-vitality-blast-open-porto-2026",
+      "https://www.hltv.org/matches/2396951/spirit-vs-mouz-blast-open-porto-2026"
+    ],
+    "downloaded": 0,
+    "blocked_by": "Direct HLTV request received HTTP 403 browser challenge; no browser connected. User asked for one manually downloaded archive."
+  }
+}

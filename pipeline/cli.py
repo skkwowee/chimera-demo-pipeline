@@ -20,6 +20,7 @@ import json
 import sys
 import tempfile
 import time
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import typer
@@ -28,7 +29,7 @@ from rich import print as rprint
 from rich.table import Table
 
 from .download import (download_rar, extract_dems, normalize_demo_name,
-                       order_dems_for_series, detect_map_name, _new_scraper)
+                       order_dems_for_series, detect_map_name, _new_scraper, require_cs2_demo)
 from .hltv import HLTVScraper, MatchSummary, ScrapeLayoutError
 from .manifest import (Manifest, ManifestEntry, FailureEntry,
                        FAILURES_MANIFEST_PATH, record_failure,
@@ -43,18 +44,27 @@ from .upload import upload_demos
 app = typer.Typer(help=__doc__.split("\n\n")[0], no_args_is_help=True)
 
 
+def since_timestamp(value: str) -> int:
+    try:
+        day = date.fromisoformat(value)
+    except ValueError as e:
+        raise typer.BadParameter("--since must be YYYY-MM-DD") from e
+    return int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp())
+
+
 @app.command()
 def scrape(
     stars: int = typer.Option(3, help="HLTV match tier filter (1-5)"),
     max_matches: int = typer.Option(20, "--max-matches", "-n"),
     start_offset: int = typer.Option(0, help="paginate from offset N"),
+    since: str = typer.Option("2023-09-27", help="earliest match date, YYYY-MM-DD (UTC)"),
 ):
     """Print N matches from HLTV listings (no downloads, no uploads)."""
     scraper = HLTVScraper()
     table = Table("id", "stars", "teams", "score", "event")
     n = 0
     for m in scraper.iter_matches(stars=stars, max_matches=max_matches,
-                                    start_offset=start_offset):
+                                    start_offset=start_offset, since_unix=since_timestamp(since)):
         table.add_row(str(m.match_id), str(m.stars),
                        f"{m.team1} vs {m.team2}", m.score, m.event)
         n += 1
@@ -105,10 +115,11 @@ def manifest(
 @app.command()
 def run(
     repo: str = typer.Option("skkwowee/chimera-cs2"),
-    stars: int = typer.Option(3, help="HLTV match tier (1-5; 5=LAN majors)"),
+    stars: int = typer.Option(3, help="minimum HLTV match rating (1-5)"),
     max_matches: int = typer.Option(10, "--max-matches", "-n",
                                       help="upload at most N new matches this run"),
     start_offset: int = typer.Option(0),
+    since: str = typer.Option("2023-09-27", help="earliest match date, YYYY-MM-DD (UTC)"),
     dry_run: bool = typer.Option(False, "--dry-run",
                                    help="scrape + download + extract + name; SKIP upload"),
     team: list[str] = typer.Option(
@@ -139,6 +150,7 @@ def run(
     cleaned up after upload. Peak local disk = one match's files
     (~500MB-2GB depending on series length).
     """
+    cutoff = since_timestamp(since)
     api = HfApi()
     rprint(f"[bold]Loading manifest from {repo}...[/bold]")
     mf = Manifest(api, repo)
@@ -188,7 +200,7 @@ def run(
     scanned = 0
     filtered_out = 0
     for summary in scraper.iter_matches(stars=stars, max_matches=scan_limit,
-                                          start_offset=start_offset):
+                                          start_offset=start_offset, since_unix=cutoff):
         scanned += 1
         if processed_this_run >= max_matches:
             break
@@ -232,6 +244,7 @@ def run(
                 dems = order_dems_for_series(dems, md.maps)
                 renamed: list[Path] = []
                 for i, dem in enumerate(dems, start=1):
+                    require_cs2_demo(dem)
                     new_name = normalize_demo_name(
                         dem, summary.team1, summary.team2,
                         summary.match_id, map_index=i,

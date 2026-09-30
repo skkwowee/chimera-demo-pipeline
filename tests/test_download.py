@@ -12,6 +12,19 @@ from pipeline.download import (
 )
 
 
+def test_upload_rejects_csgo_before_network(tmp_path):
+    from pipeline.upload import upload_demos
+    from unittest.mock import Mock
+    path = tmp_path / "match.dem"
+    api = Mock()
+    path.write_bytes(b"HL2DEMO\x00")
+    with pytest.raises(ValueError, match="CS2 required"):
+        upload_demos(api, "example/dataset", [path], match_id=1)
+    api.create_commit.assert_not_called()
+    path.write_bytes(b"PBDEMS2\x00")
+    assert upload_demos(api, "example/dataset", [path], match_id=1) == ["demos/1/match.dem"]
+
+
 class TestDetectMapName:
     def test_canonical_new_format(self):
         assert detect_map_name("furia-vs-vitality-m1-mirage") == "mirage"
