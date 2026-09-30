@@ -23,6 +23,13 @@ from .hltv import DEFAULT_HEADERS, DEFAULT_IMPERSONATE
 # Bytes per network read — 1 MB keeps memory small for big multi-map .rar files
 CHUNK = 1 << 20
 
+
+def require_cs2_demo(path: Path) -> None:
+    """Reject Source 1/CS:GO and non-demo files before archiving."""
+    with path.open("rb") as f:
+        if f.read(8) != b"PBDEMS2\x00":
+            raise ValueError(f"{path.name}: not a Source 2 demo (CS2 required)")
+
 # Map common HLTV demo aliases to canonical map names used in chimera
 MAP_NORM = {
     "de_mirage": "mirage",

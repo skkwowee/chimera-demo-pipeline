@@ -10,6 +10,8 @@ os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
 from huggingface_hub import HfApi, CommitOperationAdd
 
+from .download import require_cs2_demo
+
 
 def upload_demos(api: HfApi, repo_id: str, dem_paths: list[Path],
                   repo_type: str = "dataset",
@@ -35,6 +37,7 @@ def upload_demos(api: HfApi, repo_id: str, dem_paths: list[Path],
     for p in dem_paths:
         if not p.exists():
             raise FileNotFoundError(p)
+        require_cs2_demo(p)
         repo_path = f"{prefix}/{p.name}"
         repo_paths.append(repo_path)
         ops.append(CommitOperationAdd(
