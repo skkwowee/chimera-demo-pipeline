@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,8 @@ from pipeline.process import (
     _collect_parse_bundle,
     _read_schema_version,
     _vtuple,
+    _summarize_pt,
+    StageFailure,
     MIN_DEMOPARSER2,
     BUILDER_FIX_MARKER,
 )
@@ -90,3 +93,11 @@ class TestCollectParseBundle:
             for suffix in ("smokes", "infernos", "shots", "footsteps"):
                 (tmp_path / f"{s}_{suffix}.parquet").write_bytes(b"x")
         assert len(_collect_parse_bundle(tmp_path)) == 2 * 11
+
+
+@pytest.mark.parametrize("code,output", [(1, ""), (0, "0 0 0"), (0, "invalid")])
+def test_failed_summary_is_not_publishable(monkeypatch, tmp_path, code, output):
+    monkeypatch.setattr("pipeline.process.subprocess.run", lambda *a, **k:
+                        SimpleNamespace(returncode=code, stdout=output, stderr="fixture"))
+    with pytest.raises(StageFailure):
+        _summarize_pt(tmp_path, tmp_path / "train.pt", 1)
