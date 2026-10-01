@@ -294,11 +294,12 @@ def _upload_artifacts(
 
 
 def _collect_parse_bundle(processed_dir: Path) -> list[Path]:
-    """Every per-demo parse output worth archiving: {stem}_ticks.parquet +
-    the 5 event/header JSONs. ~12.8 MB/map measured — 1-3% of .dem size."""
+    """Legacy build inputs plus v2 tactical tables and completion manifests."""
     out = sorted(processed_dir.glob("*_ticks.parquet"))
-    for suffix in ("kills", "bomb", "damages", "rounds", "header"):
+    for suffix in ("kills", "bomb", "damages", "rounds", "header", "parse"):
         out.extend(sorted(processed_dir.glob(f"*_{suffix}.json")))
+    for suffix in ("smokes", "infernos", "shots", "footsteps"):
+        out.extend(sorted(processed_dir.glob(f"*_{suffix}.parquet")))
     return out
 
 

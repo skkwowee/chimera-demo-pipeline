@@ -85,3 +85,8 @@ class TestCollectParseBundle:
         assert all(p.name != "unrelated.txt" for p in bundle)
         # parquets first (build inputs), then JSONs
         assert bundle[0].name.endswith("_ticks.parquet")
+        for s in stems:
+            (tmp_path / f"{s}_parse.json").write_text("{}")
+            for suffix in ("smokes", "infernos", "shots", "footsteps"):
+                (tmp_path / f"{s}_{suffix}.parquet").write_bytes(b"x")
+        assert len(_collect_parse_bundle(tmp_path)) == 2 * 11
