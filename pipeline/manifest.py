@@ -68,6 +68,16 @@ class ManifestEntry:
         return _from_json_tolerant(cls, s)
 
 
+def validate_demo_ownership(entries: list[ManifestEntry]) -> None:
+    """A raw path must identify one match, never the last uploaded rematch."""
+    owners: dict[str, int] = {}
+    for entry in entries:
+        for path in entry.demo_files:
+            owner = owners.setdefault(path, entry.match_id)
+            if owner != entry.match_id:
+                raise ValueError(f"Ambiguous demo {path}: matches {owner} and {entry.match_id}; restore namespaced sources first")
+
+
 @dataclass
 class TickSequenceManifestEntry:
     """One match's tick-sequence outputs uploaded to HF.

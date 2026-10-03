@@ -12,6 +12,7 @@ from pipeline.process import (
     _read_schema_version,
     _vtuple,
     _summarize_pt,
+    process_one,
     StageFailure,
     MIN_DEMOPARSER2,
     BUILDER_FIX_MARKER,
@@ -101,3 +102,21 @@ def test_failed_summary_is_not_publishable(monkeypatch, tmp_path, code, output):
                         SimpleNamespace(returncode=code, stdout=output, stderr="fixture"))
     with pytest.raises(StageFailure):
         _summarize_pt(tmp_path, tmp_path / "train.pt", 1)
+
+
+@pytest.mark.parametrize("same_source", [True, False])
+def test_archive_reuse_requires_matching_sources(monkeypatch, tmp_path, same_source):
+    monkeypatch.setattr("pipeline.process._stage_chimera_sandbox", lambda *a: tmp_path)
+
+    def stop(route):
+        def download(*args):
+            raise RuntimeError(route)
+        return download
+
+    monkeypatch.setattr("pipeline.process._download_demos_for_match", stop("raw route"))
+    monkeypatch.setattr("pipeline.process._download_parsed_for_match", stop("archive route"))
+    entry = SimpleNamespace(demo_files=["demos/1/new.dem"])
+    previous = SimpleNamespace(parsed_files=["parsed/1/x.parquet"],
+                               source_demo_files=entry.demo_files if same_source else ["demos/old.dem"])
+    with pytest.raises(StageFailure, match="archive route" if same_source else "raw route"):
+        process_one(None, "fixture", entry, tmp_path, 8, True, from_parsed=True, prev_entry=previous)

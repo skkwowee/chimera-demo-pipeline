@@ -59,6 +59,7 @@ from .manifest import (
     FailureEntry,
     record_failure,
     should_skip_failed,
+    validate_demo_ownership,
 )
 
 # Enable parallel chunked uploads — mirrors upload.py
@@ -331,7 +332,8 @@ def process_one(
         processed_dir = sandbox / "data" / "processed" / "demos"
 
         use_parsed = (from_parsed and prev_entry is not None
-                      and prev_entry.parsed_files)
+                      and prev_entry.parsed_files
+                      and prev_entry.source_demo_files == entry.demo_files)
         parsed_repo_paths: list[str] = []
         parsed_bytes = 0
         if use_parsed:
@@ -561,6 +563,7 @@ def run_process(
     rprint(f"[bold]Loading demo manifest from {repo}...[/bold]")
     demo_mf = Manifest(api, repo)
     demo_mf.load()
+    validate_demo_ownership(demo_mf.entries)
     rprint(f"  {len(demo_mf.entries)} demo matches on HF")
 
     rprint(f"[bold]Loading tick-sequence manifest...[/bold]")
@@ -588,7 +591,7 @@ def run_process(
         old = ts_mf.get(e.match_id)
         if old is None:
             pending.append(e)
-        elif old.schema_version != schema_version:
+        elif old.schema_version != schema_version or old.source_demo_files != e.demo_files:
             pending.append(e)
             stale += 1
     rprint(f"[bold]Pending: {len(pending)} matches[/bold] "
