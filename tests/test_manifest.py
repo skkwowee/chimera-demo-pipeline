@@ -13,6 +13,7 @@ from pipeline.manifest import (
     record_failure,
     should_skip_failed,
     MAX_FAILURE_ATTEMPTS,
+    validate_demo_ownership,
 )
 
 
@@ -70,6 +71,10 @@ class TestLoad:
         mf.load()
         assert len(mf.entries) == 3
         assert mf.has(2) and not mf.has(9)
+        validate_demo_ownership(mf.entries)
+        mf.entries[1].demo_files = mf.entries[0].demo_files[:]
+        with pytest.raises(ValueError, match="Ambiguous demo"):
+            validate_demo_ownership(mf.entries)
 
 
 class TestPushShrinkGuard:
