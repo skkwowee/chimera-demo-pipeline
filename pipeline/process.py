@@ -59,6 +59,7 @@ from .manifest import (
     FailureEntry,
     record_failure,
     should_skip_failed,
+    validate_demo_ownership,
 )
 
 # Enable parallel chunked uploads — mirrors upload.py
@@ -331,7 +332,8 @@ def process_one(
         processed_dir = sandbox / "data" / "processed" / "demos"
 
         use_parsed = (from_parsed and prev_entry is not None
-                      and prev_entry.parsed_files)
+                      and prev_entry.parsed_files
+                      and prev_entry.source_demo_files == entry.demo_files)
         parsed_repo_paths: list[str] = []
         parsed_bytes = 0
         if use_parsed:
@@ -407,7 +409,7 @@ def process_one(
         try:
             _run_chimera_script(
                 chimera_dir, "scripts/build_tick_sequences.py",
-                args=["--downsample", str(downsample), "--val-demos", "0"],
+                args=["--downsample", str(downsample), "--match-id", str(entry.match_id)],
                 cwd=sandbox,
             )
         except Exception as e:
@@ -421,7 +423,7 @@ def process_one(
 
         # Collect every artifact in the tick_sequences output directory so
         # downstream consumers get the schema + manifest alongside the .pt.
-        # (val.pt won't exist when --val-demos 0.)
+        # A per-match build has no global validation split.
         artifacts = sorted(p for p in ts_dir.iterdir() if p.is_file())
         sizes_mb = {p.name: p.stat().st_size / 1e6 for p in artifacts}
         rprint(f"  [bold]artifacts[/bold]: " + ", ".join(
@@ -429,7 +431,7 @@ def process_one(
 
         # Stats for the manifest line, read via the chimera python — the
         # pipeline venv has no torch and must not grow that dependency.
-        n_rounds, total_ticks, feature_dim = _summarize_pt(chimera_dir, train_pt)
+        n_rounds, total_ticks, feature_dim = _summarize_pt(chimera_dir, train_pt, entry.match_id)
 
         schema_version = _read_schema_version(ts_dir) or prov.get("schema_version")
         bytes_total = sum(p.stat().st_size for p in artifacts)
@@ -485,30 +487,38 @@ def process_one(
         )
 
 
-def _summarize_pt(chimera_dir: Path, pt_path: Path) -> tuple[int, int, int]:
+def _summarize_pt(chimera_dir: Path, pt_path: Path, match_id: int) -> tuple[int, int, int]:
     """Run the chimera python inline to read (n_rounds, total_ticks, feature_dim)
-    from a saved tensor bundle. Returns zeros on any failure (best-effort).
+    from a saved tensor bundle. Invalid/empty output must not be uploaded.
     """
     chimera_py = chimera_dir / ".venv" / "bin" / "python"
     code = (
         "import torch, sys; "
-        "d = torch.load(sys.argv[1], map_location='cpu', weights_only=False); "
+        "d = torch.load(sys.argv[1], map_location='cpu', weights_only=False, mmap=True); "
         "n = len(d.get('tensors', [])); "
+        "assert str(d.get('match_id')) == sys.argv[2], 'wrong match identity'; "
+        "assert len(d['metas']) == n and n > 0, 'empty/misaligned metadata'; "
+        "assert all(str(m.get('match_id')) == sys.argv[2] and m.get('source_demo_sha256') "
+        "and len(m.get('raw_ticks', [])) == len(x) for m, x in zip(d['metas'], d['tensors'])), "
+        "'missing source identity/ticks'; "
         "t = sum(int(x.shape[0]) for x in d.get('tensors', [])); "
         f"f = int(d.get('feature_dim', 0)); "
         "print(f'{n} {t} {f}')"
     )
     proc = subprocess.run(
-        [str(chimera_py), "-c", code, str(pt_path)],
+        [str(chimera_py), "-c", code, str(pt_path), str(match_id)],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        return (0, 0, 0)
+        raise StageFailure("bake", f"cannot inspect output bundle: {proc.stderr.strip()[-300:]}")
     try:
         n, t, f = proc.stdout.strip().split()
-        return (int(n), int(t), int(f))
-    except Exception:
-        return (0, 0, 0)
+        result = (int(n), int(t), int(f))
+        if min(result) <= 0:
+            raise ValueError("empty bundle")
+        return result
+    except ValueError as exc:
+        raise StageFailure("bake", "invalid output bundle summary") from exc
 
 
 def run_process(
@@ -553,6 +563,7 @@ def run_process(
     rprint(f"[bold]Loading demo manifest from {repo}...[/bold]")
     demo_mf = Manifest(api, repo)
     demo_mf.load()
+    validate_demo_ownership(demo_mf.entries)
     rprint(f"  {len(demo_mf.entries)} demo matches on HF")
 
     rprint(f"[bold]Loading tick-sequence manifest...[/bold]")
@@ -580,7 +591,7 @@ def run_process(
         old = ts_mf.get(e.match_id)
         if old is None:
             pending.append(e)
-        elif old.schema_version != schema_version:
+        elif old.schema_version != schema_version or old.source_demo_files != e.demo_files:
             pending.append(e)
             stale += 1
     rprint(f"[bold]Pending: {len(pending)} matches[/bold] "
