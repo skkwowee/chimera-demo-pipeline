@@ -105,7 +105,7 @@ class HLTVScraper:
     def fetch_results(self, stars: int = 3, offset: int = 0) -> list[MatchSummary]:
         """Parse one page of /results. HLTV returns 100 matches/page.
 
-        stars: filter by HLTV match tier (5 = LAN majors, 3 = top online, 1 = all).
+        stars: minimum HLTV match rating; does not restrict game version or date.
         offset: pagination cursor (0, 100, 200, ...).
         """
         url = f"{RESULTS_URL}?stars={stars}&offset={offset}"
@@ -145,7 +145,8 @@ class HLTVScraper:
             event_el = a.select_one("span.event-name") or a.select_one(".event")
             event = event_el.get_text(strip=True) if event_el else ""
             stars_count = len(a.select("i.fa.fa-star.star"))
-            unix_el = con.find(attrs={"data-zonedgrouping-entry-unix": True})
+            unix_el = con if con.has_attr("data-zonedgrouping-entry-unix") else con.find(
+                attrs={"data-zonedgrouping-entry-unix": True})
             try:
                 date_unix = (int(unix_el["data-zonedgrouping-entry-unix"]) // 1000
                              if unix_el else None)
@@ -227,7 +228,7 @@ class HLTVScraper:
     # ----- generator ---------------------------------------------------------
 
     def iter_matches(self, stars: int = 3, max_matches: int = 100,
-                      start_offset: int = 0) -> Iterator[MatchSummary]:
+                      start_offset: int = 0, since_unix: int | None = None) -> Iterator[MatchSummary]:
         """Walk paginated results until max_matches yielded or empty page hit."""
         n = 0
         offset = start_offset
@@ -236,6 +237,13 @@ class HLTVScraper:
             if not batch:
                 return
             for m in batch:
+                if since_unix is not None:
+                    if not m.date_unix:
+                        raise ScrapeLayoutError(f"match {m.match_id}: date missing; refusing undated ingest")
+                    if m.date_unix < since_unix:
+                        return  # HLTV results are newest first; don't walk back into CS:GO.
+                if m.stars < stars:
+                    continue
                 yield m
                 n += 1
                 if n >= max_matches:
